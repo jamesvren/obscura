@@ -269,6 +269,11 @@ impl StealthHttpClient {
             }
         }
 
+        // These independent flags preserve the emulated TLS fingerprint.
+        if crate::client::env_insecure_tls() {
+            builder = builder.tls_cert_verification(false).tls_verify_hostname(false);
+        }
+
         if let Some(proxy) = proxy_url {
             if let Ok(p) = wreq::Proxy::all(proxy) {
                 builder = builder.proxy(p);

@@ -277,6 +277,14 @@ obscura serve --port 9222 --allow-private-network
 
 See [docs/Environment-variables.md](docs/Environment-variables.md) for the
 full allow/deny rules (DNS-resolution-time checks included).
+
+For private-CA HTTPS servers, prefer trusting the issuer explicitly:
+`SSL_CERT_FILE=/path/to/company-ca.pem obscura fetch https://your-server/`.
+For temporary testing only, `obscura fetch https://your-server/ --insecure`
+(or `OBSCURA_INSECURE_TLS=1`) disables certificate and hostname verification.
+This global flag also applies to `serve`, `scrape`, `mcp`, and `--stealth`.
+It does not relax private-network restrictions. Verification stays enabled
+by default. Do not use this bypass for untrusted networks or sensitive data.
 ```
 
 ## Rendering

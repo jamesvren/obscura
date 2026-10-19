@@ -55,6 +55,12 @@ struct Args {
     #[arg(long, global = true)]
     allow_private_network: bool,
 
+    /// Disable TLS certificate and hostname verification for trusted test
+    /// servers only. Unsafe on untrusted networks. Also applies to stealth
+    /// and subprocess workers. Equivalent to OBSCURA_INSECURE_TLS=1.
+    #[arg(long, global = true)]
+    insecure: bool,
+
     /// Pass raw flags to V8, in the same form V8/Chromium/Node accept
     /// (e.g. `"--max-old-space-size=4096 --max-semi-space-size=64 --expose-gc"`).
     /// Applied once at startup before any isolate is created.
@@ -436,6 +442,14 @@ async fn run_cli() -> anyhow::Result<()> {
         // threaded at this point.
         unsafe {
             std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
+        }
+    }
+
+    // HTTP clients and subprocess workers share the explicit TLS opt-out.
+    if args.insecure {
+        // Set alongside the existing process-wide network policy above.
+        unsafe {
+            std::env::set_var("OBSCURA_INSECURE_TLS", "1");
         }
     }
 
@@ -2430,6 +2444,21 @@ mod tests {
     //      newline, no DOM mutation).
     //   3. `write_or_print_bytes` writes raw bytes to a file without the
     //      trailing newline that `println!` would add.
+    #[test]
+    fn insecure_flag_is_global_and_defaults_to_verification() {
+        let args = Args::try_parse_from(["obscura", "fetch", "https://example.com"]).unwrap();
+        assert!(!args.insecure);
+        for command in ["fetch", "serve", "scrape", "mcp"] {
+            for argv in [
+                vec!["obscura", "--insecure", command],
+                vec!["obscura", command, "--insecure"],
+            ] {
+                let args = Args::try_parse_from(argv).unwrap();
+                assert!(args.insecure, "{command} must accept the global flag");
+            }
+        }
+    }
+
     #[test]
     fn parsed_fetch_dump_original_is_accepted_by_clap() {
         let args = Args::try_parse_from([

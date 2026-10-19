@@ -23,7 +23,8 @@ fn configured_root_paths() -> Vec<std::path::PathBuf> {
     if let Some(directory) = std::env::var_os("SSL_CERT_DIR").filter(|path| !path.is_empty()) {
         match std::fs::read_dir(directory) {
             Ok(entries) => {
-                paths.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
+                paths.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                    .filter(|path| path.is_file()));
             }
             Err(error) => {
                 tracing::warn!(%error, "failed to read SSL_CERT_DIR");
@@ -32,6 +33,20 @@ fn configured_root_paths() -> Vec<std::path::PathBuf> {
     }
     paths.sort();
     paths
+}
+
+/// Explicit process-wide opt-out of TLS certificate verification.
+/// The CLI sets this before creating clients, and subprocess workers inherit it.
+pub fn env_insecure_tls() -> bool {
+    matches!(
+        std::env::var("OBSCURA_INSECURE_TLS")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
 }
 
 fn configured_root_certificates() -> &'static [reqwest::Certificate] {
@@ -1070,7 +1085,10 @@ impl ObscuraHttpClient {
             let mut builder = Client::builder()
                 .redirect(Policy::none())
                 .timeout(self.timeout)
-                .danger_accept_invalid_certs(false)
+                // Verification is skipped only when `--insecure` /
+                // OBSCURA_INSECURE_TLS opts in; unset keeps the strict
+                // default so behaviour is unchanged for existing callers.
+                .danger_accept_invalid_certs(env_insecure_tls())
                 // Read a folded header line (obs-fold) as browsers do instead of
                 // failing the response.
                 .http1_allow_obsolete_multiline_headers_in_responses(true)
@@ -1794,7 +1812,7 @@ mod resource_cache_tests {
 #[cfg(test)]
 mod ssrf_tests {
     use super::{
-        is_forbidden_ip, merge_response_header, request_fetch_site, request_referrer, validate_url,
+        env_insecure_tls, is_forbidden_ip, merge_response_header, request_fetch_site, request_referrer, validate_url,
         CallbackRegistry, ObscuraHttpClient, ObscuraNetError, RequestCredentials, RequestMode,
         ResourceRequest, ResourceType, SsrfGuardResolver,
     };
@@ -2897,6 +2915,7 @@ mod ssrf_tests {
         let (port, ca_pem) = https_fixture_with_private_ca().await;
         let ca_dir = tempfile::tempdir().unwrap();
         std::fs::write(ca_dir.path().join("private-ca.pem"), ca_pem).unwrap();
+        std::fs::create_dir(ca_dir.path().join("java")).unwrap();
         std::env::set_var("SSL_CERT_DIR", ca_dir.path());
 
         let client =
@@ -2922,6 +2941,52 @@ mod ssrf_tests {
         // The message must carry the TLS cause, not only "error sending request".
         let message = error.to_string();
         assert!(message.contains("invalid peer certificate"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn insecure_tls_env_skips_certificate_verification() {
+        // The same unknown-CA fixture that `private_ca_is_still_rejected_without_ssl_cert_file`
+        // rejects must succeed once OBSCURA_INSECURE_TLS opts out of verification
+        // (the `--insecure` path). No SSL_CERT_* is set: the env flag alone
+        // must be enough.
+        let (port, _ca_pem) = https_fixture_with_private_ca().await;
+        std::env::set_var("OBSCURA_INSECURE_TLS", "1");
+
+        let client =
+            ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        let url = Url::parse(&format!("https://127.0.0.1:{port}/")).unwrap();
+        let resp = client
+            .fetch(&url)
+            .await
+            .expect("OBSCURA_INSECURE_TLS=1 must skip the unknown-CA error");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.text(), "private ca ok");
+    }
+
+    #[cfg(feature = "stealth")]
+    #[tokio::test]
+    async fn stealth_insecure_tls_env_skips_certificate_verification() {
+        let (port, _ca_pem) = https_fixture_with_private_ca().await;
+        std::env::set_var("OBSCURA_INSECURE_TLS", "1");
+        let client = crate::StealthHttpClient::with_proxy(Arc::new(CookieJar::new()), None, true);
+        let url = Url::parse(&format!("https://127.0.0.1:{port}/")).unwrap();
+        let resp = client.fetch(&url).await.expect("stealth must honor insecure TLS");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.text(), "private ca ok");
+    }
+
+    #[test]
+    fn insecure_tls_env_parses_the_documented_values() {
+        for yes in ["1", "true", "YES", " on "] {
+            std::env::set_var("OBSCURA_INSECURE_TLS", yes);
+            assert!(env_insecure_tls(), "'{yes}' must enable insecure TLS");
+        }
+        for no in ["0", "", "off"] {
+            std::env::set_var("OBSCURA_INSECURE_TLS", no);
+            assert!(!env_insecure_tls(), "'{no}' must not enable insecure TLS");
+        }
+        std::env::remove_var("OBSCURA_INSECURE_TLS");
+        assert!(!env_insecure_tls(), "unset must keep verification on");
     }
 
     #[test]

@@ -14,6 +14,17 @@ OBSCURA_ALLOW_PRIVATE_NETWORK=1 obscura fetch http://localhost:8080
 
 Per-process equivalent: `--allow-private-network` on any subcommand.
 
+### `OBSCURA_INSECURE_TLS`
+
+Disable TLS certificate and hostname verification for page requests, JavaScript
+fetch/XHR, and scrape workers, including the stealth transport. Off by default.
+Truthy values: `1`, `true`, `yes`, `on` (case-insensitive, whitespace trimmed).
+The global `--insecure` flag is the CLI equivalent.
+
+Use only for temporary testing against trusted self-signed HTTPS servers.
+Prefer `SSL_CERT_FILE=/path/to/company-ca.pem` to trust a private CA without
+turning verification off. This does not bypass the SSRF policy.
+
 ### `OBSCURA_NAV_TIMEOUT_MS`
 
 Hard ceiling on a single navigation. Default 30000 (30 seconds). Applies to `Page.navigate` and the CLI `fetch` command.
